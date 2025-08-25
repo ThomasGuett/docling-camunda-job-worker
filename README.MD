@@ -1,10 +1,14 @@
 ## WIP python based Camunda job worker that uses docling to convert pdf files to markdown
 This is a work in progress, it aims to help make sense of large pdf files and allow their content to be used in agentic processes
 
-### Installation
+### Preparation and Installation
 In order to run this project on your machine you will need to follow the installation instructions from [docling](https://github.com/docling-project/docling) 
 
-`pip install docling`
+#### Dependencies
+I tested this project on a macbook with python3.13, it did not fly with python3.12 due to missing mps features for docling.
+
+These installed prerequisits should keep you covered.
+`pip install docling grpcio grpcio-tools`
 
 and prefetch the models: [advanced options](https://docling-project.github.io/docling/usage/advanced_options/)
 
