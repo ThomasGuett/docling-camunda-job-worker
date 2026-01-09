@@ -8,37 +8,46 @@ load_dotenv()
 import os
 
 # Docling settings
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.document_converter import DocumentConverter
 
 artifacts_path = "~/.cache/docling/models"
 docs_path = "./docs/"
 
-pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path)
-doc_converter = DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)})
+doc_converter = DocumentConverter()
+# Mode settings
+opp_mode = os.getenv("mode")
 
 # Access settings Camunda
-client_id = os.getenv("client_id")
+client_id = os.getenv("client_id", "")
 client_secret = os.getenv("client_secret")
-cluster_id = os.getenv("cluster_id")
-region = os.getenv("region")
+cluster_id = os.getenv("cluster_id", "")
+region = os.getenv("region", "")
+audience = os.getenv("audience")
 
 def get_access_token(url, client_id, client_secret):
     response = requests.post(
         url,
         data={"grant_type": "client_credentials", 
-              "audience": "zeebe.camunda.io",
+              "audience": audience,
               "client_id": client_id,
               "client_secret":client_secret},
         auth=(client_id, client_secret),
     )
     return response.json()["access_token"]
 
-channel = grpc.secure_channel(f"{cluster_id}.{region}.zeebe.camunda.io:443", grpc.ssl_channel_credentials())
-access_token = get_access_token("https://login.cloud.camunda.io/oauth/token", client_id, client_secret)
-headers = [('authorization', f'Bearer {access_token}')]
-client = GatewayStub(channel)
+def open_channel():
+    if opp_mode == "self-managed":
+        channel = grpc.insecure_channel("localhost:26500")
+        access_token = get_access_token("http://localhost:18080/auth/realms/camunda-platform/protocol/openid-connect/token", client_id, client_secret)
+        headers = [('authorization', f'Bearer {access_token}')]
+    else:
+        channel = grpc.secure_channel(f"{cluster_id}.{region}.zeebe.camunda.io:443", grpc.ssl_channel_credentials())
+        access_token = get_access_token("https://login.cloud.camunda.io/oauth/token", client_id, client_secret)
+        headers = [('authorization', f'Bearer {access_token}')]
+
+    client = GatewayStub(channel)
+
+    return client, access_token, headers
 
 def activate_job(jobType):
     print(f"activating jobs of type {jobType}...")
@@ -69,8 +78,13 @@ def download_doc(document):
     contentHash = document["contentHash"]
     fileMetaData = document["metadata"]
     fileName = fileMetaData["fileName"]
-    params = {"Authorization":f"Bearer {access_token}"}
-    url = f"https://{region}.zeebe.camunda.io:443/{cluster_id}/v2/documents/{documentId}?contentHash={contentHash}"
+    if opp_mode == "self-managed":
+        params = {"Authorization":f"Bearer {access_token}"}
+        url = f"http://localhost:8088/v2/documents/{documentId}?contentHash={contentHash}"
+        print(f"url: {url}")
+    else:
+        params = {"Authorization":f"Bearer {access_token}"}
+        url = f"https://{region}.zeebe.camunda.io:443/{cluster_id}/v2/documents/{documentId}?contentHash={contentHash}"
     response = requests.get(url, headers=params)
     with open(f"{docs_path}{fileName}", "wb") as f:
         f.write(response.content)
@@ -79,22 +93,38 @@ def download_doc(document):
 
 if __name__ == "__main__":
     try:
-        print("starting worker...")
+        print("starting docling worker...")
+        client, access_token, headers = open_channel()
+        print("opened channel")
         while True:
             try:
                 job: ActivatedJob = activate_job("converter.docling")
                 variables = json.loads(job.variables)
                 outputName = variables["outputVarName"]
-                print(f"output varname: {outputName}")
                 document = variables["document"][0]
+                # download doc from Camunda
                 doc_name = download_doc(document)
                 # convert with docling
                 result = doc_converter.convert(f'{docs_path}{doc_name}')
                 markdown = result.document.export_to_markdown()
-                variables[outputName] = markdown
+                html = result.document.export_to_html()
+                #jsonExport = result.document.export_to_json()
+                variables[outputName + "_md"] = markdown
+                variables[outputName + "_html"] = html
+                #print("dumping markdown into txt")
+                #with open("markdown.txt", "w") as f:
+                #    f.write(markdown)
+                #with open("html-version.html", "w") as f:
+                #    f.write(html)
+                #with open("json-version.json", "w") as f:
+                #    f.write(jsonExport)
                 complete_job(job, variables)
             except Exception as e:
-                print(f"job worker error: {e}")
+                if e.__class__ != IndexError:
+                    print(f"job worker error: {e}")
+                    print(f"error class: {e.__class__}")
+                    client, access_token, headers = open_channel()
+                    # client, access_token, headers = open_channel()
 
     except Exception as e:
         print(f"Error: {e}")
